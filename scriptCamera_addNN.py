@@ -15,7 +15,7 @@ pipeline = dai.Pipeline()
 
 # Define a source - color camera
 cam = pipeline.createColorCamera()
-cam.setPreviewSize(300, 300)  # 300x300 will be the preview frame size, available as 'preview' output of the node
+cam.setPreviewSize(672, 384) 
 cam.setInterleaved(False)
 # cam.setStillSize(672, 384)         # 1st MOD
 # cam.setVideoSize(672, 384)        # 2nd MOD
