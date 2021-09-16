@@ -17,8 +17,8 @@ pipeline = dai.Pipeline()
 cam = pipeline.createColorCamera()
 cam.setPreviewSize(300, 300)  # 300x300 will be the preview frame size, available as 'preview' output of the node
 cam.setInterleaved(False)
-# cam.setStillSize(300, 300)         # 1st MOD
-# cam.setVideoSize(300, 300)        # 2nd MOD
+# cam.setStillSize(672, 384)         # 1st MOD
+# cam.setVideoSize(672, 384)        # 2nd MOD
 
 
 # Script node
@@ -42,7 +42,7 @@ cam.still.link(xout.input)
 detection_nn = pipeline.createMobileNetDetectionNetwork()
 # Blob is the Neural Network file, compiled for MyriadX. It contains both the definition and weights of the model
 # We're using a blobconverter tool to retreive the MobileNetSSD blob automatically from OpenVINO Model Zoo
-detection_nn.setBlobPath(str(blobconverter.from_zoo(name='mobilenet-ssd', shaves=6)))
+detection_nn.setBlobPath(str(blobconverter.from_zoo(name='pedestrian-detection-adas-0002', shaves=6)))
 # Next, we filter out the detections that are below a confidence threshold. Confidence can be anywhere between <0..1>
 detection_nn.setConfidenceThreshold(CONF)
 # Next, we link the camera 'preview' output to the neural network detection input, so that it can produce detections
