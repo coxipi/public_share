@@ -1,32 +1,40 @@
 import sys
 from pathlib import Path
-# import blobconverter
-# import copy  
 import csv
 import cv2
 import datetime
 import depthai
+# import blobconverter
 import numpy as np
 import time
 import os
 import argparse
 import copy
+import pickle
+
+"""
+Script takes a video stream with the camera and keeps one frame.
+
+INPUT:
+Many arguments passed (organized below with parser) can affect the detection success, 
+they must be tweaked for the particular situation.
+
+Don't pass "-sho" to show output with odroid, it won't work
+
+OUTPUT: 
+- One raw frame (...raw.jpg)
+and possibly 
+- One frame with detection box(es) (...boxed.jpg)
+- Location/size of the box(es) (...detections.csv)
+
+"""
 
 # ==============================================================================
 # Parameters and functions
 # ==============================================================================
-BLOB_NAME, WI, HE = 'pedestrian-detection-adas-0002', 672, 384
-# BLOB_NAME, WI, HE, FPS = 'mobilenet-ssd', 300, 300, 30
-#OUTPUT_PATH = os.path.abspath( os.path.dirname( __file__ ) )  + '/output/tests/'
-#OUTPUT_PATH = 'output/'
-SHOW_OUTPUT = True
-KEEP_MAX_DET = False
-WAIT_TIME = 1000
 
 HOME_PATH = str(Path.home())
-
 parser = argparse.ArgumentParser()
-
 parser.add_argument(
     '-iq', '--image_quality',  type=float, default = 100,
     help="Number in [0,100] setting image quality"
@@ -81,6 +89,8 @@ CONF = args.confidence_threshold
 BLUR_THRESHOLD = args.blur_threshold
 RES = args.resolution 
 
+BLOB_NAME, WI, HE = 'pedestrian-detection-adas-0002', 672, 384
+# BLOB_NAME, WI, HE, FPS = 'mobilenet-ssd', 300, 300, 30
 
 def frameNorm(frame, bbox):
     normVals = np.full(len(bbox), frame.shape[0])
@@ -95,7 +105,7 @@ def box_the_frame(frame, detections_list):
         cv2.putText(frame, f"{int(det[4] * 100)}%", (bbox[0] + 10, bbox[1] + 20), cv2.FONT_HERSHEY_TRIPLEX, 0.5, 255)
     return frame 
 
-def store_data(frame, detections_list, output_path, img_quality):
+def store_data(frame, detections_list, stream_h, output_path, img_quality):
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     # path
     if not os.path.exists(output_path):
@@ -108,17 +118,29 @@ def store_data(frame, detections_list, output_path, img_quality):
             spamwriter = csv.writer(csvfile, delimiter=' ', quotechar='|', quoting=csv.QUOTE_MINIMAL)
             for i in range(0, len(detections_list)):
                 spamwriter.writerow(detections_list[i])
+    with open(output_path + timestamp + '_stream_h.pkl', 'wb') as f:
+        pickle.dump(stream_h, f)
     return timestamp
 
-def blur_score(frame):
+def get_blurScore(frame):
     return cv2.Laplacian(frame, cv2.CV_64F).var() 
 
-def is_blurry(frame, threshold):
-    return cv2.Laplacian(frame, cv2.CV_64F).var() < threshold
+def is_clear(frame, threshold):
+    return cv2.Laplacian(frame, cv2.CV_64F).var() > threshold
+
+class stream_history:
+    def __init__(self, detection_number = [], blur_score = []):
+        self.detection_number = detection_number
+        self.blur_score = blur_score
+    
+    def update(self, frame, detections_list):
+        self.detection_number.append(len(detections_list))
+        self.blur_score.append(get_blurScore(frame))
+        
 
 
 # ==============================================================================
-# Setting color camera, neural network, camera control
+# Setting color camera and neural network
 # ==============================================================================
 
 # Pipeline tells DepthAI what operations to perform when running
@@ -127,9 +149,7 @@ pipeline = depthai.Pipeline()
 # Initialize color cam
 cam_rgb = pipeline.createColorCamera()
 cam_rgb.setPreviewSize(WI, HE) # C'est ce que le NN me demande
-# cam_rgb.setVideoSize(WI, HE)
 cam_rgb.setInterleaved(False)
-
 
 cam_rgb.setFps(FPS)
 
@@ -149,7 +169,6 @@ else :
 
 if args.flip :
     cam_rgb.setImageOrientation(depthai.CameraImageOrientation.HORIZONTAL_MIRROR)
-# cam_rgb.setImageOrientation(depthai.CameraImageOrientation.VERTICAL_FLIP)
 
 
 # Initialize Neural network (which model to choose, confidence_threshold, etc.)
@@ -188,71 +207,91 @@ with depthai.Device(pipeline) as device:
     ctrl = depthai.CameraControl()
     if LENS_FOCUS == -1:
         ctrl.setAutoFocusMode(depthai.RawCameraControl.AutoFocusMode.MACRO)
-    else : 
+    else: 
         ctrl.setManualFocus(LENS_FOCUS)
     controlQueue.send(ctrl)
-
-
 
     q_rgb = device.getOutputQueue("rgb", maxSize=4, blocking=False)
     q_nn = device.getOutputQueue("nn", maxSize=4, blocking=False)
 
-    frame_raw = None
-    frame_keep = None
+    # Init the loop
+    frame, frame_backup = None, None
     time_init = time.time()
+    stream_h = stream_history() 
     while True:
         detections_list = []
-        frame_raw = q_rgb.get().getCvFrame()
+        frame = q_rgb.get().getCvFrame()
         in_nn = q_nn.get()
-        frame_is_clear = not is_blurry(frame_raw, BLUR_THRESHOLD)
-        if frame_keep is None and frame_is_clear:
-            frame_keep = copy.deepcopy(frame_raw)
+        frame_is_clear = is_clear(frame, BLUR_THRESHOLD)
+        
+        if frame_backup is None and frame_is_clear:
+            frame_backup = copy.deepcopy(frame)
 
         if in_nn is not None:
-            # when data from nn is received, we take the detections array that contains the blob results
             detections = in_nn.detections
             detections_list = [[det.xmin, det.ymin, det.xmax, det.ymax, det.confidence] for det in detections]
-            if args.show_output and detections_list != []:
-                frame_boxed = copy.deepcopy(frame_raw)
-                box_the_frame(frame_boxed, detections_list)
-
-
+        
+        # Stream history
+        stream_h.update(frame, detections_list)
+       
+       # Show the frames lives (by passing -sho)
         if args.show_output:
             if detections_list != []:
-                cv2.imshow('test', frame_boxed)
+                boxed_frame = copy.deepcopy(frame)
+                box_the_frame(boxed_frame, detections_list)
+                cv2.imshow('Ouput', boxed_frame)
             else: 
-                cv2.imshow('test', frame_raw)
-
-
+                print('ye')
+                cv2.imshow('Output', frame)
         
         # at any time, you can press "q" and exit the main loop, therefore exiting the program itself
         if cv2.waitKey(1) == ord('q'):
             break
 
-        if (time.time() - time_init > EARLY_STOP * STREAM_DURATION and detections != [] and is_blurry(frame_raw, BLUR_THRESHOLD) == False):
-            break
+        # Early break if a detection on a clear frame is found
+        if time.time() - time_init > EARLY_STOP * STREAM_DURATION: 
+            if frame_is_clear and detections_list != []:
+                break
         
-        if time.time() - time_init > STREAM_DURATION :
-            if not frame_is_clear and frame_keep is not None:
-                frame_raw = frame_keep
+        # Break if maximal stream duration is reached
+        if time.time() - time_init > STREAM_DURATION:
+            if not frame_is_clear and frame_backup is not None:
+                frame = frame_backup
+                frame_is_clear = True
             else:
                 print('Warning: No clear frame was obtained')
             break
-timestamp = store_data(frame_raw, detections_list, OUTPUT_PATH, IMG_QUALITY)
+        
 
+# ==============================================================================
+# Post-pipeline treatment
+# ==============================================================================
+# save files
+timestamp = store_data(frame, detections_list, stream_h, OUTPUT_PATH, IMG_QUALITY)
 
-if args.show_output:
-    if detections_list != []:
-        cv2.imshow('test', frame_boxed)
-    else: 
-        cv2.imshow('test', frame_raw)
-    
+# log
 print('=======================================================================')
 print('=== Over: ' + timestamp + ' =========================================')
 print('=======================================================================')
 print('Resolution: ' + str(RES))
-print('Confidence threshold: ' + str(CONF) + ' and blur threshold: ' + str(BLUR_THRESHOLD))
-print('Blur score: ' + str(blur_score(frame_raw)))
-print('Frame is clear:' + str(not is_blurry(frame_raw, BLUR_THRESHOLD)))
-print('Number of detections : ' + str(len(detections_list)))
+print('Confidence threshold: ' + str(CONF) + ' & blur threshold: ' + str(BLUR_THRESHOLD))
+print('Blur score: ' + str(get_blurScore(frame)))
+print('Frame is clear: ' + str(frame_is_clear))
+print('Number of detections: ' + str(len(detections_list)))
 print('=======================================================================')
+
+# Show output
+if args.show_output:
+    import matplotlib.pyplot as plt
+    y1, y2 = stream_h.detection_number, [b_s/BLUR_THRESHOLD for b_s in stream_h.blur_score]
+    x = range(0,len(y1))
+    plt.scatter(x, y1)
+    plt.scatter(x, y2)
+    plt.show()
+    
+    if detections_list != []:
+        cv2.imshow('Boxed frame kept', boxed_frame)
+    else: 
+        cv2.imshow('Frame kept', frame)
+    
+
