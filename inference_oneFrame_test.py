@@ -145,8 +145,6 @@ else :
 
 if args.flip :
     cam_rgb.setImageOrientation(depthai.CameraImageOrientation.HORIZONTAL_MIRROR)
-# cam_rgb.setImageOrientation(depthai.CameraImageOrientation.VERTICAL_FLIP)
-
 
 # Initialize Neural network (which model to choose, confidence_threshold, etc.)
 detection_nn = pipeline.createMobileNetDetectionNetwork()
@@ -202,6 +200,7 @@ with depthai.Device(pipeline) as device:
         in_nn = q_nn.get()
         
         if frame_is_clear:
+            print('ye')
             if frame_keep is None:
                 frame_keep = frame
 
@@ -209,6 +208,7 @@ with depthai.Device(pipeline) as device:
                 # when data from nn is received, we take the detections array that contains the blob results
                 detections = in_nn.detections
                 detections_list = [[det.xmin, det.ymin, det.xmax, det.ymax, det.confidence] for det in detections]
+                print(detections_list)
                 if args.show_output and detections_list != []:
                     frame_keep = copy.deepcopy(frame)
                     detections_list_keep = detections_list

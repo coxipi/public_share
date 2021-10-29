@@ -212,56 +212,57 @@ with depthai.Device(pipeline) as device:
     # Init the loop
     frame_raw = None
     detections, detections_keep = [], []
-    time_init = time.time()
-    atLeast_oneClearFrame = False
+    time_init = time.time()    
+    # Dump first seconds
+
     frame_backup = None
     while True:
         detections_list = []
         frame_raw = q_rgb.get().getCvFrame()
         in_nn = q_nn.get()
+        #in_nn = q_nn.get()
         # in_rgb = q_rgb.tryGet()
         # if in_rgb is not None:
         #     # If the packet from RGB camera is present, we're retrieving the frame in OpenCV format using getCvFrame
         #     frame = in_rgb.getCvFrame()
         
-        if in_nn is not None:
-            # when data from nn is received, we take the detections array that contains the blob results
-            detections = in_nn.detections
-            detections_list = [[det.xmin, det.ymin, det.xmax, det.ymax, det.confidence] for det in detections]
-            if args.show_output and detections_list != []:
-                frame_boxed = copy.deepcopy(frame_raw)
-                box_the_frame(frame_boxed, detections_list)
-
-
+        if is_blurry(frame_raw, BLUR_THRESHOLD) == False:
+            
+            # Keep at least one clear frame as a backup
+            if frame_backup is None:
+                frame_backup = frame_raw
+        
+            if in_nn is not None:
+                # when data from nn is received, we take the detections array that contains the blob results
+                detections = in_nn.detections
+                detections_list = [[det.xmin, det.ymin, det.xmax, det.ymax, det.confidence] for det in detections]
+                if args.show_output and detections_list != []:
+                    frame_boxed = copy.deepcopy(frame_raw)
+                    box_the_frame(frame_boxed, detections_list)
+        
         if args.show_output:
             if detections_list != []:
                 cv2.imshow('test', frame_boxed)
             else: 
                 cv2.imshow('test', frame_raw)
-
-    
+        
         # at any time, you can press "q" and exit the main loop, therefore exiting the program itself
         if cv2.waitKey(1) == ord('q'):
             break
         
-        # Keep at least one clear frame as a backup
-        if atLeast_oneClearFrame == False and time.time() - time_init > EARLY_STOP * STREAM_DURATION:
-            if is_blurry(frame_raw, BLUR_THRESHOLD) == False:
-                atLeast_oneClearFrame =  True
-                frame_backup = frame_raw
-        
         # A detection is obtained and the frame is clear ; BREAK
-        if (time.time() - time_init > EARLY_STOP * STREAM_DURATION and detections != []):
-            if is_blurry(frame_raw, BLUR_THRESHOLD) == False:
+        if detections != []:
                 break
         
         # No detection obtained, but stream is over ; BREAK
         if time.time() - time_init > STREAM_DURATION :
             if frame_backup is not None:
                 frame_raw = frame_backup
-            else:
-                print("Warning: No clear frame obtained during stream!" )
-            break
+        else:
+            print("Warning: No clear frame obtained during stream!" )
+        break
+        
+        
 
 # ==============================================================================
 # Post-treatment, after pipeline
@@ -284,4 +285,6 @@ print('Blur score: ' + str(blur_score(frame_raw)))
 print('Frame is clear:' + str(not is_blurry(frame_raw, BLUR_THRESHOLD)))
 print('Number of detections : ' + str(len(detections_list)))
 print('=======================================================================')
+
+
 
